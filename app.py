@@ -11,7 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-from mistralai import Mistral
+from openai import OpenAI
 
 st.set_page_config(
     page_title="OCR Assurance - Analyse de Documents",
@@ -22,14 +22,20 @@ st.set_page_config(
 st.title("📄 OCR Assurance - Analyse de Documents")
 st.markdown("---")
 
-# Configuration Mistral AI
-MISTRAL_API_KEY = "WOm8UvB9xLxxuyS3J7hSwLrBItAa979b"
-mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+# Configuration OpenAI
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+if not OPENAI_API_KEY:
+    st.error("❌ Clé API OpenAI manquante. Configurez OPENAI_API_KEY dans les secrets Streamlit.")
+    st.stop()
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 def extract_text_from_image(image: Image.Image) -> str:
     """Extract text from PIL Image using OCR"""
     try:
-        text = pytesseract.image_to_string(image, lang='fra')
+        # Configuration OCR optimisée pour la vitesse
+        custom_config = r'--oem 3 --psm 6 -c tessedit_do_invert=0'
+        text = pytesseract.image_to_string(image, lang='fra', config=custom_config)
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction OCR: {str(e)}")
@@ -38,15 +44,36 @@ def extract_text_from_image(image: Image.Image) -> str:
 def process_pdf(pdf_bytes: bytes) -> List[str]:
     """Convert PDF to images and extract text from each page"""
     try:
-        images = convert_from_bytes(pdf_bytes)
+        # Vérifier que poppler est disponible
+        import subprocess
+        try:
+            subprocess.run(['pdftoppm', '-v'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            st.error("❌ Poppler n'est pas installé. Veuillez redéployer l'application.")
+            return []
+
+        # Optimisation: DPI plus faible pour accélérer
+        images = convert_from_bytes(pdf_bytes, dpi=150, fmt='jpeg')
         texts = []
+
+        progress_container = st.container()
+
         for i, image in enumerate(images):
+            with progress_container:
+                st.write(f"📄 Traitement page {i+1}/{len(images)}...")
+
+            # Redimensionner l'image si trop grande
+            if image.width > 2000 or image.height > 2000:
+                image.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+
             text = extract_text_from_image(image)
             texts.append(text)
-            st.write(f"Page {i+1} traitée")
+
+        progress_container.empty()
         return texts
     except Exception as e:
         st.error(f"Erreur lors du traitement du PDF: {str(e)}")
+        st.info("💡 Si le problème persiste, redéployez l'application sur Streamlit Cloud")
         return []
 
 def process_image(image_bytes: bytes) -> str:
@@ -59,7 +86,7 @@ def process_image(image_bytes: bytes) -> str:
         return ""
 
 def analyze_insurance_document_with_llm(text: str) -> Dict[str, Optional[str]]:
-    """Extract specific insurance information from text using Mistral AI"""
+    """Extract specific insurance information from text using OpenAI"""
 
     try:
         prompt = f"""Tu es un expert en analyse de documents d'assurance. Analysez le texte suivant d'un document d'assurance et extrayez PRÉCISÉMENT les informations suivantes:
@@ -106,9 +133,9 @@ Si tu trouve rien à la date de reception, regarde dans le début du PDF, y'a un
             }
         ]
 
-        # Appel à l'API Mistral
-        response = mistral_client.chat.complete(
-            model="mistral-large-latest",
+        # Appel à l'API OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
             messages=messages,
             temperature=0.1,  # Très faible pour une analyse précise
             max_tokens=1000
@@ -142,7 +169,7 @@ Si tu trouve rien à la date de reception, regarde dans le début du PDF, y'a un
             return get_empty_result()
 
     except Exception as e:
-        st.error(f"❌ Erreur lors de l'appel à Mistral AI: {str(e)}")
+        st.error(f"❌ Erreur lors de l'appel à OpenAI: {str(e)}")
         return get_empty_result()
 
 def get_empty_result() -> Dict[str, Optional[str]]:
@@ -468,7 +495,7 @@ def main():
             progress_bar.progress(75)
 
             # Analyze with AI
-            st.info("🤖 Analyse avec Mistral AI en cours...")
+            st.info("🤖 Analyse avec OpenAI en cours...")
             analysis_result = analyze_insurance_document_with_llm(combined_text)
             progress_bar.progress(100)
 
